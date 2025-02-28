@@ -13,6 +13,7 @@ import {
   MenuItem,
   FormControl,
   InputLabel,
+  Slider,
 } from '@mui/material';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
 import axios from 'axios';
@@ -45,31 +46,31 @@ const ImageUpload = () => {
     const files = Array.from(event.target.files);
     setSelectedFiles(files);
 
-    console.log('Selected files:', files);  // 調試信息
+    console.log('Selected files:', files);
 
     // 生成預覽
     const newPreviews = await Promise.all(files.map(async (file) => {
       const fileExtension = file.name.split('.').pop().toLowerCase();
-      console.log(`Processing file: ${file.name}`);  // 調試信息
+      console.log(`Processing file: ${file.name}`);
       
       try {
         const formData = new FormData();
         formData.append('file', file);
         
-        console.log('Sending preview request...');  // 調試信息
+        console.log('Sending preview request...');
         const response = await axios.post('http://localhost:8000/api/preview', formData, {
           headers: {
             'Content-Type': 'multipart/form-data',
           },
         });
         
-        console.log('Preview response:', response.data);  // 調試信息
+        console.log('Preview response:', response.data);
         
         if (response.data.success) {
           return {
             file,
-            name: file.name,  // 修正這裡：使用 file.name 而不是 file.filename
-            channels: response.data.previews,
+            name: file.name,
+            channels: response.data.channels || [],
             shape: response.data.shape
           };
         }
@@ -85,7 +86,7 @@ const ImageUpload = () => {
       };
     }));
 
-    console.log('New previews:', newPreviews);  // 調試信息
+    console.log('New previews:', newPreviews);
     setPreviews(newPreviews);
   };
 
@@ -199,35 +200,39 @@ const ImageUpload = () => {
                       Shape: {preview.shape?.join(' × ')}
                     </Typography>
                     <Grid container spacing={2}>
-                      {preview.channels.map((channel, channelIndex) => (
+                      {(preview.channels || []).map((channel, channelIndex) => (
                         <Grid item xs={12} sm={6} key={channelIndex}>
                           <Paper variant="outlined" sx={{ p: 1 }}>
                             <Typography variant="subtitle2" gutterBottom>
                               Channel {channel.channel}
                             </Typography>
-                            <Box
-                              sx={{
-                                width: '100%',
-                                paddingTop: '100%',
-                                position: 'relative',
-                                overflow: 'hidden',
-                                borderRadius: 1,
-                                bgcolor: '#f5f5f5'
-                              }}
-                            >
-                              <img
-                                src={channel.preview}
-                                alt={`Channel ${channel.channel}`}
-                                style={{
-                                  position: 'absolute',
-                                  top: 0,
-                                  left: 0,
+                            {channel.slices ? (
+                              <ImagePreview3D channelData={channel} />
+                            ) : (
+                              <Box
+                                sx={{
                                   width: '100%',
-                                  height: '100%',
-                                  objectFit: 'contain'
+                                  paddingTop: '100%',
+                                  position: 'relative',
+                                  overflow: 'hidden',
+                                  borderRadius: 1,
+                                  bgcolor: '#f5f5f5'
                                 }}
-                              />
-                            </Box>
+                              >
+                                <img
+                                  src={channel.preview}
+                                  alt={`Channel ${channel.channel}`}
+                                  style={{
+                                    position: 'absolute',
+                                    top: 0,
+                                    left: 0,
+                                    width: '100%',
+                                    height: '100%',
+                                    objectFit: 'contain'
+                                  }}
+                                />
+                              </Box>
+                            )}
                           </Paper>
                         </Grid>
                       ))}
@@ -278,35 +283,48 @@ const ImageUpload = () => {
                       <Typography variant="body2" color="textSecondary">
                         Processing Time: {result.processing_time}
                       </Typography>
-                      {result.mask_preview && (
+                      {result.is_3d ? (
+                        // 3D 結果顯示
                         <Box sx={{ mt: 2 }}>
                           <Typography variant="subtitle2" gutterBottom>
-                            Segmentation Result:
+                            3D Segmentation Result:
                           </Typography>
-                          <Box
-                            sx={{
-                              width: '100%',
-                              paddingTop: '100%',
-                              position: 'relative',
-                              overflow: 'hidden',
-                              borderRadius: 1,
-                              bgcolor: '#f5f5f5'
-                            }}
-                          >
-                            <img
-                              src={result.mask_preview}
-                              alt="Segmentation Result"
-                              style={{
-                                position: 'absolute',
-                                top: 0,
-                                left: 0,
-                                width: '100%',
-                                height: '100%',
-                                objectFit: 'contain'
-                              }}
-                            />
-                          </Box>
+                          <ImagePreview3D channelData={{
+                            slices: result.mask_previews
+                          }} />
                         </Box>
+                      ) : (
+                        // 2D 結果顯示
+                        result.mask_preview && (
+                          <Box sx={{ mt: 2 }}>
+                            <Typography variant="subtitle2" gutterBottom>
+                              Segmentation Result:
+                            </Typography>
+                            <Box
+                              sx={{
+                                width: '100%',
+                                paddingTop: '100%',
+                                position: 'relative',
+                                overflow: 'hidden',
+                                borderRadius: 1,
+                                bgcolor: '#f5f5f5'
+                              }}
+                            >
+                              <img
+                                src={result.mask_preview}
+                                alt="Segmentation Result"
+                                style={{
+                                  position: 'absolute',
+                                  top: 0,
+                                  left: 0,
+                                  width: '100%',
+                                  height: '100%',
+                                  objectFit: 'contain'
+                                }}
+                              />
+                            </Box>
+                          </Box>
+                        )
                       )}
                     </CardContent>
                   </Card>
@@ -317,6 +335,59 @@ const ImageUpload = () => {
         )}
       </CardContent>
     </Card>
+  );
+};
+
+const ImagePreview3D = ({ channelData }) => {
+  const [currentDepth, setCurrentDepth] = useState(0);
+
+  if (!channelData || !channelData.slices || channelData.slices.length === 0) {
+    return null;
+  }
+
+  return (
+    <Box sx={{ width: '100%', mt: 2 }}>
+      {/* 圖片預覽 */}
+      <Box
+        sx={{
+          width: '100%',
+          paddingTop: '100%',
+          position: 'relative',
+          overflow: 'hidden',
+          borderRadius: 1,
+          bgcolor: '#f5f5f5'
+        }}
+      >
+        <img
+          src={channelData.slices[currentDepth].preview}
+          alt={`Depth ${currentDepth}`}
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            width: '100%',
+            height: '100%',
+            objectFit: 'contain'
+          }}
+        />
+      </Box>
+
+      {/* 深度滑動條 */}
+      <Box sx={{ px: 2, py: 1 }}>
+        <Typography variant="body2" color="textSecondary" gutterBottom>
+          Depth: {currentDepth + 1} / {channelData.slices.length}
+        </Typography>
+        <Slider
+          value={currentDepth}
+          onChange={(_, newValue) => setCurrentDepth(newValue)}
+          min={0}
+          max={channelData.slices.length - 1}
+          step={1}
+          marks
+          valueLabelDisplay="auto"
+        />
+      </Box>
+    </Box>
   );
 };
 

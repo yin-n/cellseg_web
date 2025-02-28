@@ -53,61 +53,76 @@ def load_file_to_numpy(contents: bytes, filename: str) -> np.ndarray:
         print(traceback.format_exc())
         raise
 
-def create_channel_preview(channel_array: np.ndarray) -> str:
-    """將單個通道轉換為 base64 編碼的 PNG 圖片"""
+def create_channel_depth_preview(channel_array: np.ndarray) -> list:
+    """為整個 3D 體積創建所有切片的預覽"""
     try:
-        # 標準化到 0-255 範圍
-        if channel_array.dtype != np.uint8:
-            normalized = ((channel_array - channel_array.min()) / 
-                        (channel_array.max() - channel_array.min()) * 255).astype(np.uint8)
-        else:
-            normalized = channel_array
+        previews = []
+        # 遍歷所有深度切片
+        for depth_idx in range(channel_array.shape[0]):
+            slice_array = channel_array[depth_idx]
+            
+            # 標準化到 0-255 範圍
+            if slice_array.dtype != np.uint8:
+                normalized = ((slice_array - slice_array.min()) / 
+                            (slice_array.max() - slice_array.min()) * 255).astype(np.uint8)
+            else:
+                normalized = slice_array
 
-        # 轉換為 PNG
-        _, buffer = cv2.imencode('.png', normalized)
-        img_str = base64.b64encode(buffer).decode()
-        
-        return f"data:image/png;base64,{img_str}"
+            # 轉換為 PNG
+            _, buffer = cv2.imencode('.png', normalized)
+            img_str = base64.b64encode(buffer).decode()
+            
+            previews.append({
+                'depth': depth_idx,
+                'preview': f"data:image/png;base64,{img_str}"
+            })
+            
+        return previews
     except Exception as e:
         raise ValueError(f"無法創建預覽: {str(e)}")
 
 @app.post("/api/preview")
 async def get_preview(file: UploadFile = File(...)):
-    """生成多通道預覽"""
+    """生成 3D/4D 數據的預覽"""
     try:
-        print(f"Receiving file: {file.filename}")  # 調試信息
+        print(f"Receiving file: {file.filename}")
         contents = await file.read()
         img_array = load_file_to_numpy(contents, file.filename)
         
-        print(f"Loaded array shape: {img_array.shape}, dtype: {img_array.dtype}")  # 調試信息
+        print(f"Loaded array shape: {img_array.shape}, dtype: {img_array.dtype}")
         
-        # 確保數組是 3D 的 (channels, height, width)
-        if len(img_array.shape) != 3:
-            print(f"Unexpected shape: {img_array.shape}")  # 調試信息
-            raise ValueError(f"預期輸入為 3D 數組 (channels, height, width)，但得到 {img_array.shape}")
+        # 處理 3D 或 4D 數據
+        if len(img_array.shape) == 3:  # (D, H, W)
+            img_array = img_array.reshape(1, *img_array.shape)  # 轉換為 (C, D, H, W)
+        elif len(img_array.shape) != 4:
+            raise ValueError(f"預期輸入為 3D 或 4D 數組，但得到 {img_array.shape}")
         
-        # 為每個通道創建預覽
-        previews = []
-        for i in range(img_array.shape[0]):
-            print(f"Processing channel {i}")  # 調試信息
-            preview_data = create_channel_preview(img_array[i])
-            previews.append({
-                'channel': i,
-                'preview': preview_data
+        channels, depth, height, width = img_array.shape
+        
+        # 為每個通道創建所有深度切片的預覽
+        channel_previews = []
+        for c in range(channels):
+            previews = create_channel_depth_preview(img_array[c])
+            channel_previews.append({
+                'channel': c,
+                'slices': previews,
+                'depth': depth,
+                'height': height,
+                'width': width
             })
         
         response_data = {
             "success": True,
-            "previews": previews,
+            "channels": channel_previews,
             "shape": img_array.shape,
             "dtype": str(img_array.dtype),
-            "num_channels": img_array.shape[0]
+            "num_channels": channels,
+            "num_depths": depth
         }
-        print(f"Sending response with {len(previews)} previews")  # 調試信息
         return response_data
         
     except Exception as e:
-        print(f"Error in preview generation: {str(e)}")  # 調試信息
+        print(f"Error in preview generation: {str(e)}")
         return {"success": False, "error": str(e)}
 
 @app.get("/api/models")

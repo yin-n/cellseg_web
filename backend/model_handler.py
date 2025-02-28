@@ -52,7 +52,8 @@ class BrainModel:
             # 為每個細胞分配不同的顏色
             unique_labels = np.unique(masks)[1:]  # 跳過背景（0）
             for label in unique_labels:
-                # 生成隨機顏色
+                # 生成隨機顏色，但保持一致性
+                np.random.seed(int(label))  # 確保同一個標籤總是得到相同的顏色
                 color = np.random.randint(0, 255, 3)
                 mask_rgb[masks == label] = color
             
@@ -66,40 +67,67 @@ class BrainModel:
             raise
 
     def predict(self, image: np.ndarray, model_type: ModelType) -> Dict[str, Any]:
-        """使用指定模型進行預測"""
+        """使用指定模型進行預測，對於4D數據只處理中間部分"""
+        is_3d = len(image.shape) == 4  # (C, D, H, W)   
         try:
-            # 確保模型已加載
-            if model_type not in self.models:
-                print(f"Model {model_type.value} not loaded, loading now...")
-                load_result = self.load_model(model_type)
-                if not load_result["success"]:
-                    raise Exception(f"Failed to load model: {load_result['error']}")
-
-            model = self.models[model_type]
-            print(f"Using model: {model_type.value}")
-            
             if model_type == ModelType.CELLPOSE:
                 print("Starting Cellpose prediction...")
                 print(f"Input image shape: {image.shape}")
                 
-                masks, flows, styles = model.eval(
+                # 確保模型已加載
+                if model_type not in self.models:
+                    print(f"Loading model {model_type.value}...")
+                    load_result = self.load_model(model_type)
+                    if not load_result["success"]:
+                        raise Exception(f"Failed to load model: {load_result.get('error', 'Unknown error')}")
+                
+                # 處理4D數據
+                if len(image.shape) == 4:  # (C, D, H, W)
+                    print("Processing 4D data...")
+                    image = image[:, 20:60, 128:384, 128:384] 
+                    print(f"Selected middle channels, new shape: {image.shape}")
+                    
+                    # 確保數據格式正確 (2, D, H, W)
+                    if image.shape[0] != 2:
+                        raise ValueError(f"Expected 2 channels for prediction, got {image.shape[0]}")
+                
+                # 使用已加載的模型進行預測
+                masks, flows, styles = self.models[model_type].eval(
                     image, 
                     channels=[2, 1],
                     min_size=0,
-                    do_3D=False
+                    do_3D=is_3d  # 因為我們處理的是3D數據
                 )
                 
                 print(f"Prediction completed. Mask shape: {masks.shape}")
                 
-                # 創建 mask 預覽
-                mask_preview = self.create_mask_preview(masks)
-                
-                result = {
-                    "model_name": "Cellpose",
-                    "num_cells": len(np.unique(masks)) - 1,
-                    "processing_time": "N/A",
-                    "mask_preview": mask_preview  # 添加 mask 預覽
-                }
+                # 生成預覽
+                if len(masks.shape) == 3:  # 3D mask
+                    mask_previews = []
+                    for z in range(masks.shape[0]):
+                        preview = self.create_mask_preview(masks[z])
+                        mask_previews.append({
+                            'depth': z,
+                            'preview': preview
+                        })
+                    
+                    result = {
+                        "model_name": "Cellpose",
+                        "num_cells": len(np.unique(masks)) - 1,
+                        "processing_time": "N/A",
+                        "mask_previews": mask_previews,
+                        "is_3d": True
+                    }
+                else:
+                    # 2D mask 處理（保持原有邏輯）
+                    mask_preview = self.create_mask_preview(masks)
+                    result = {
+                        "model_name": "Cellpose",
+                        "num_cells": len(np.unique(masks)) - 1,
+                        "processing_time": "N/A",
+                        "mask_preview": mask_preview,
+                        "is_3d": False
+                    }
                 
                 return result
             
